@@ -1,0 +1,97 @@
+import wixData from 'wix-data';
+import wixUsersBackend from 'wix-users-backend';
+import { sendRecipientEmail, sendSenderConfirmation } from 'backend/mailer.js';
+
+export async function saveDraft({ title, body, recipientName, recipientEmail, deliverAt, consent, senderName, senderEmail }) {
+  const user = wixUsersBackend.currentUser;
+  if (!user) throw new Error('Not logged in');
+
+  const item = {
+    title: title?.trim() || '',
+    body: body || '',
+    recipientName: recipientName?.trim() || '',
+    recipientEmail: recipientEmail?.trim() || '',
+    deliverAt: deliverAt ? new Date(deliverAt) : null,
+    consent: !!consent,
+    senderName: senderName?.trim() || '',
+    senderEmail: senderEmail?.trim() || '',
+    status: 'draft',
+    owner: user.id // reference field auto-resolves
+  };
+
+  return wixData.insert('Letters', item);
+}
+
+export async function scheduleLetter({ _id, title, body, recipientName, recipientEmail, deliverAt, consent, senderName, senderEmail }) {
+  const user = wixUsersBackend.currentUser;
+  if (!user) throw new Error('Not logged in');
+
+  if (!recipientEmail) throw new Error('Recipient email is required');
+  if (!deliverAt) throw new Error('Delivery date/time is required');
+  if (new Date(deliverAt).getTime() <= Date.now()) throw new Error('Delivery must be in the future');
+  if (!consent) throw new Error('Consent is required');
+
+  const updated = {
+    title: title?.trim() || 'A letter from your past self',
+    body: body || '',
+    recipientName: recipientName?.trim() || '',
+    recipientEmail: recipientEmail?.trim(),
+    deliverAt: new Date(deliverAt),
+    consent: true,
+    senderName: senderName?.trim() || '',
+    senderEmail: senderEmail?.trim() || '',
+    status: 'pending',
+    owner: user.id
+  };
+
+  if (_id) {
+    // update existing (ownership enforced by collection permissions)
+    updated._id = _id;
+    return wixData.update('Letters', updated);
+  } else {
+    return wixData.insert('Letters', updated);
+  }
+}
+
+export async function processDueLetters() {
+  const now = new Date();
+  const results = await wixData.query('Letters')
+    .eq('status', 'pending')
+    .le('deliverAt', now)
+    .limit(100)
+    .find();
+
+  if (!results.items.length) return { sent: 0 };
+
+  let sent = 0;
+  for (const letter of results.items) {
+    try {
+      await sendRecipientEmail(letter);
+      await sendSenderConfirmation(letter);
+      await wixData.update('Letters', { ...letter, status: 'sent' });
+      sent++;
+    } catch (err) {
+      console.error('Delivery failed', letter._id, err);
+      await wixData.update('Letters', { ...letter, status: 'failed' });
+    }
+  }
+  return { sent };
+}
+
+export async function myLetters() {
+  const user = wixUsersBackend.currentUser;
+  if (!user) throw new Error('Not logged in');
+  return wixData.query('Letters')
+    .eq('owner', user.id)
+    .descending('createdAt')
+    .limit(200)
+    .find();
+}
+
+export async function deleteLetter(letterId) {
+  const user = wixUsersBackend.currentUser;
+  if (!user) throw new Error('Not logged in');
+  // Permissions enforce owner-only deletes (but we set Delete: Admin only above for safety)
+  // If you want owners to delete, switch Delete permission to owner only.
+  return wixData.remove('Letters', letterId);
+}

@@ -1,6 +1,11 @@
-# dependencies
-node_modules/
-.vscode/
-.idea/
+
+my-site-13/
+
+# Wix / Velo
 .wix/
-jsconfig.json
+.vscode/
+node_modules/
+dist/
+.DS_Store
+*.log
+*.zip
